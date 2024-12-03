@@ -5,7 +5,6 @@ import pandas as pd
 import glob
 import numpy as np
 from scipy.signal import correlate
-import plotly.graph_objects as go
 
 ### USE
 # import data_processing as dp
@@ -173,6 +172,83 @@ def plot_interactive_peaks(data, column, rt_column='RT(min)', peaks=None, baseli
 
     # Show the plot
     fig.show()
+
+import os
+import pandas as pd
+import glob
+
+# Extract data function remains the same
+def extract_data2(file_path):
+    data = []
+    start_extraction = False
+
+    with open(file_path, 'r') as file:
+        for line in file:
+            if line.startswith("R.Time (min)"):
+                start_extraction = True
+                continue
+            if start_extraction:
+                columns = line.strip().split()
+                if len(columns) == 2:
+                    # Replace commas with dots in each column
+                    columns = [col.replace(',', '.') for col in columns]
+                    data.append(columns)
+
+    return data
+    
+
+# Updated combine function to have a unique RT(min) column
+def combine_data2(input_folder, output_folder):
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Process each file in the input folder
+    for file_name in os.listdir(input_folder):
+        if file_name.endswith(".txt"):
+            file_path = os.path.join(input_folder, file_name)
+            data = extract_data(file_path)
+
+            # Save each extracted data into a new .csv file
+            output_file_path = os.path.join(output_folder, f"{os.path.splitext(file_name)[0]}_table.csv")
+            with open(output_file_path, 'w') as output_file:
+                for row in data:
+                    output_file.write('\t'.join(row) + '\n')
+
+    # List all saved *_table.csv files
+    file_list = glob.glob(os.path.join(output_folder, '*_table.csv'))
+
+    # Initialize an empty dictionary to store dataframes with varying sizes
+    data_frames = {}
+
+    # Read the first file to establish a common RT(min) axis
+    first_file = file_list[0]
+    base_df = pd.read_csv(first_file, delimiter='\t', header=None, names=["RT(min)", os.path.basename(first_file).split('_table.csv')[0]])
+
+    # Use the RT(min) column from the first file as the reference axis
+    rt_column = base_df["RT(min)"]
+
+    # Store the first file's data excluding the RT(min) column
+    data_frames[os.path.basename(first_file).split('_table.csv')[0]] = base_df.iloc[:, 1]
+
+    # Read each subsequent file and align its data to the reference RT(min)
+    for file in file_list[1:]:
+        column_name = os.path.basename(file).split('_table.csv')[0]
+        df = pd.read_csv(file, delimiter='\t', header=None, names=["RT(min)", column_name])
+
+        # Align data using the reference RT(min) column
+        aligned_df = pd.merge(rt_column.to_frame(), df, on="RT(min)", how="left")
+        data_frames[column_name] = aligned_df[column_name]
+
+    # Combine all dataframes into one, with the common RT(min) column
+    combined_df = pd.concat([rt_column] + list(data_frames.values()), axis=1)
+
+    # Substitute NaN values with zeros
+    combined_df.fillna(0, inplace=True)
+
+    # Save the combined DataFrame to a CSV file
+    combined_df.to_csv(os.path.join(output_folder, "combined_data.csv"), sep=";", index=False)
+
+    return combined_df
 
 ### REMOVE UNWANTED REGIONS
 def remove_unwanted_regions(df, start_value, end_value):
@@ -535,3 +611,259 @@ def STOCSY_LCDAD(target,X,ppm):
     return corr, covar, fig
 
 
+
+import numpy as np
+
+def NMR_alignment(spectra, reference, method='PAFFT', seg_size=50, shift=None, lookahead=1):
+    """
+    Perform NMR alignment using PAFFT or RAFFT methods.
+
+    Parameters:
+        spectra (ndarray): 2D array of spectra to be shift corrected (D x N, where D is number of samples, N is number of data points).
+        reference (ndarray): Reference spectrum (must be the same length as spectra).
+        method (str): 'PAFFT' or 'RAFFT' to select the alignment method.
+        seg_size (int): Segment size for PAFFT alignment.
+        shift (int, optional): Maximum shift allowed for each segment.
+        lookahead (int, optional): Allows the recursive algorithm to check local misalignments (for RAFFT).
+
+    Returns:
+        aligned_spectra (ndarray): Aligned spectra.
+	
+	Application: 
+    
+    from nmr_alignment import NMR_alignment
+    
+    # Example data preparation: Extracting the spectra and reference from your NMR data
+    # Replace 'nmr_data' with your actual data variable
+    spectra = nmr_data.iloc[:, 1:]  # Exclude the first index column
+    reference = spectra.iloc[0].values  # Use the first row as the reference spectrum
+
+    # Convert the dataframe to a numpy array
+    spectra_array = spectra.values
+
+    # Set parameters for the alignment
+    seg_size = 50  # Segment size for PAFFT (adjust if needed)
+    shift = None   # Optional, max shift value for PAFFT and RAFFT
+    lookahead = 1  # Lookahead value for RAFFT
+
+    # Calling the PAFFT alignment method
+    try:
+        aligned_spectra_pafft = NMR_alignment(spectra_array, reference, method='PAFFT', seg_size=seg_size, shift=shift)
+        print("PAFFT aligned spectra shape:", aligned_spectra_pafft.shape)
+    except Exception as e:
+        print(f"Error in PAFFT alignment: {e}")
+
+    # Calling the RAFFT alignment method
+    try:
+        aligned_spectra_rafft = NMR_alignment(spectra_array, reference, method='RAFFT', shift=shift, lookahead=lookahead)
+        print("RAFFT aligned spectra shape:", aligned_spectra_rafft.shape)
+    except Exception as e:
+        print(f"Error in RAFFT alignment: {e}")
+    """
+    if method == 'PAFFT':
+        return PAFFT_alignment(spectra, reference, seg_size, shift)
+    elif method == 'RAFFT':
+        return RAFFT_alignment(spectra, reference, shift, lookahead)
+    else:
+        raise ValueError("Invalid method specified. Choose either 'PAFFT' or 'RAFFT'.")
+
+def PAFFT_alignment(spectra, reference, seg_size, shift=None):
+    if len(reference) != spectra.shape[1]:
+        raise ValueError("Reference and spectra must be of equal lengths.")
+    elif len(reference) == 1:
+        raise ValueError("Reference cannot be of length 1.")
+    
+    if shift is None:
+        shift = len(reference)
+    
+    aligned_spectrum = []
+
+    for i in range(spectra.shape[0]):
+        startpos = 0
+        aligned = []
+
+        while startpos < len(spectra[i]):
+            endpos = startpos + (seg_size * 2)
+
+            # Adjust segment sizes to ensure equal lengths
+            if endpos >= len(spectra[i]):
+                samseg = spectra[i, startpos:]
+                refseg = reference[startpos:]
+            else:
+                samseg = spectra[i, startpos + seg_size:endpos]
+                refseg = reference[startpos + seg_size:endpos]
+                minpos = find_min(samseg, refseg)
+                endpos = startpos + minpos + seg_size
+                samseg = spectra[i, startpos:endpos]
+                refseg = reference[startpos:endpos]
+
+            # Ensure segments are of equal length before FFT operation
+            min_length = min(len(samseg), len(refseg))
+            samseg = samseg[:min_length]
+            refseg = refseg[:min_length]
+
+            # Check for segment size compatibility
+            if len(samseg) != len(refseg):
+                raise ValueError(f"Segments are not equal after trimming: {len(samseg)} vs {len(refseg)}")
+
+            # Pad segments to match FFT requirements
+            max_length = max(len(samseg), len(refseg))
+            samseg = np.pad(samseg, (0, max_length - len(samseg)), 'constant')
+            refseg = np.pad(refseg, (0, max_length - len(refseg)), 'constant')
+
+            # Debug check after padding
+            if len(samseg) != len(refseg):
+                raise ValueError(f"Segments are not equal even after padding: {len(samseg)} vs {len(refseg)}")
+
+            # FFT cross-correlation to determine the lag
+            M = len(refseg)
+            diff = 1e6
+            for i in range(20):
+                curdiff = (2 ** i) - M
+                if 0 < curdiff < diff:
+                    diff = curdiff
+
+            refseg = np.pad(refseg, (0, diff), 'constant')
+            samseg = np.pad(samseg, (0, diff), 'constant')
+            M += diff
+
+            X = np.fft.fft(refseg)
+            Y = np.fft.fft(samseg)
+            R = X * np.conj(Y) / M
+            rev = np.fft.ifft(R)
+            vals = np.real(rev)
+
+            maxpos = 0
+            maxi = -np.inf
+
+            shift = min(shift, M)
+
+            for i in range(shift):
+                if vals[i] > maxi:
+                    maxi = vals[i]
+                    maxpos = i
+                if vals[-i - 1] > maxi:
+                    maxi = vals[-i - 1]
+                    maxpos = len(vals) - i - 1
+
+            if maxi < 0.1:
+                lag = 0
+            elif maxpos > len(vals) // 2:
+                lag = maxpos - len(vals) - 1
+            else:
+                lag = maxpos - 1
+
+            # Apply the determined lag to shift the segment
+            if lag == 0 or lag >= len(samseg):
+                movedSeg = samseg
+            elif lag > 0:
+                ins = np.ones(lag) * samseg[0]
+                movedSeg = np.concatenate([ins, samseg[:len(samseg) - lag]])
+            else:
+                lag = abs(lag)
+                ins = np.ones(lag) * samseg[-1]
+                movedSeg = np.concatenate([samseg[lag:], ins])
+
+            aligned.extend(movedSeg)
+            startpos = endpos + 1
+
+        aligned_spectrum.append(aligned)
+
+    # Pad aligned spectra to ensure all rows have the same length
+    max_len = max(map(len, aligned_spectrum))
+    aligned_spectrum = [np.pad(row, (0, max_len - len(row)), 'constant') for row in aligned_spectrum]
+
+    return np.array(aligned_spectrum)
+
+def RAFFT_alignment(spectra, reference, shift=None, lookahead=1):
+    if len(reference) != spectra.shape[1]:
+        raise ValueError("Reference and spectra must be of equal lengths.")
+    elif len(reference) == 1:
+        raise ValueError("Reference cannot be of length 1.")
+    
+    if shift is None:
+        shift = len(reference)
+    
+    aligned_spectra = np.array([recur_align(spectrum, reference, shift, lookahead) for spectrum in spectra])
+    return aligned_spectra
+
+def recur_align(spectrum, reference, shift, lookahead):
+    if len(spectrum) < 10:
+        return spectrum
+
+    lag = FFTcorr(spectrum, reference, shift)
+    
+    if lag == 0 and lookahead <= 0:
+        return spectrum
+    else:
+        if lag == 0:
+            lookahead -= 1
+
+        aligned = move_segment(spectrum, lag)
+        mid = find_mid(aligned)
+        
+        first_spectrum_half = aligned[:mid]
+        first_reference_half = reference[:mid]
+        second_spectrum_half = aligned[mid:]
+        second_reference_half = reference[mid:]
+        
+        aligned1 = recur_align(first_spectrum_half, first_reference_half, shift, lookahead)
+        aligned2 = recur_align(second_spectrum_half, second_reference_half, shift, lookahead)
+        
+        return np.concatenate([aligned1, aligned2])
+
+def FFTcorr(spectrum, target, shift):
+    M = len(target)
+    diff = 1e6
+    for i in range(20):
+        curdiff = (2 ** i) - M
+        if 0 < curdiff < diff:
+            diff = curdiff
+
+    target = np.pad(target, (0, diff), 'constant')
+    spectrum = np.pad(spectrum, (0, diff), 'constant')
+    M += diff
+
+    X = np.fft.fft(target)
+    Y = np.fft.fft(spectrum)
+    R = X * np.conj(Y) / M
+    rev = np.fft.ifft(R)
+    vals = np.real(rev)
+
+    maxpos = 0
+    maxi = -np.inf
+    shift = min(shift, M)
+
+    for i in range(shift):
+        if vals[i] > maxi:
+            maxi = vals[i]
+            maxpos = i
+        if vals[-i - 1] > maxi:
+            maxi = vals[-i - 1]
+            maxpos = len(vals) - i - 1
+
+    if maxi < 0.1:
+        return 0
+    if maxpos > len(vals) // 2:
+        return maxpos - len(vals) - 1
+    return maxpos - 1
+
+def move_segment(seg, lag):
+    if lag == 0 or lag >= len(seg):
+        return seg
+    elif lag > 0:
+        ins = np.ones(lag) * seg[0]
+        return np.concatenate([ins, seg[:-lag]])
+    else:
+        lag = abs(lag)
+        ins = np.ones(lag) * seg[-1]
+        return np.concatenate([seg[lag:], ins])
+
+def find_mid(spec):
+    M = len(spec) // 2
+    specM = spec[M - M//4 : M + M//4]
+    mid = np.argmin(specM) + M - M//4
+    return mid
+
+def find_min(samseg, refseg):
+    return min(len(samseg), len(refseg))  # Placeholder function, may need refinement
